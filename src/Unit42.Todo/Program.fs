@@ -113,6 +113,20 @@ module Model =
           Todos = Map.add todo.Id indexedTodo model.Todos
     }
 
+  let toggleAll (model: T) =
+    let isDone =
+      match activeTodos model with
+      | [] -> false
+      | _ -> true
+
+    {
+      model with
+          Todos =
+            Map.map
+              (fun _ todo -> { todo with Data.IsDone = isDone })
+              model.Todos
+    }
+
   let deleteTodo (todoId: TodoId.T) (model: T) = {
     model with
         Todos = Map.remove todoId model.Todos
@@ -239,6 +253,9 @@ module Views =
         encodedText $" item{plural} left"
       ]
 
+  let todoList model =
+    ul [ _class "todo-list" ] (Model.todos model |> List.map todoItem)
+
   let index (model: Model.T) =
     let newTodoId =
       model.NewTodoId
@@ -254,11 +271,15 @@ module Views =
         main [ _class "main" ] [
           div [ _class "toggle-all-container" ] [
             input [ _class "toggle-all"; _type "checkbox" ]
-            label [ _class "toggle-all-label"; _for "toggle-all" ] [
-              encodedText "Mark all as complete"
-            ]
+            label [
+              _class "toggle-all-label"
+              _for "toggle-all"
+              attr "hx-put" "/todos/toggle-all"
+              attr "hx-target" ".todo-list"
+              attr "hx-swap" "outerHTML"
+            ] [ encodedText "Mark all as complete" ]
           ]
-          ul [ _class "todo-list" ] (Model.todos model |> List.map todoItem)
+          todoList model
         ]
         footer [ _class "footer" ] [
           todoCount [] model
@@ -452,6 +473,29 @@ let deleteTodoHandler (todoGuid: Guid) =
       return! ctx.WriteTextAsync "OK"
     }
 
+let toggleAllHandler: HttpHandler =
+  fun (next: HttpFunc) (ctx: HttpContext) ->
+    // TODO: We can do better than this, having to fetch the model every time... come on?
+    let modelId = ctx.Items[requestScopeItemKeys.ModelId] :?> ModelId.T
+
+    let model =
+      match models.TryGetValue modelId with
+      | false, _ -> failwith "absurd"
+      | true, x -> x
+
+    let updatedModel = Model.toggleAll model
+
+    models.TryUpdate(modelId, updatedModel, model)
+    |> ignore
+
+    let view =
+      [ Views.todoList updatedModel ]
+      |> Views.OutOfBandWrapper.withTodoCount updatedModel
+      |> ViewEngine.RenderView.AsString.htmlNodes
+
+    htmlString view next ctx
+
+
 let webApp =
   ensureIdCookie
   >=> choose [
@@ -461,6 +505,7 @@ let webApp =
       "/todos"
       (choose [
 
+        subRoute "/toggle-all" (choose [ PUT >=> toggleAllHandler ])
         subRoutef "/%O" (fun todoId ->
           choose [
             PUT >=> upsertTodoHandler todoId
