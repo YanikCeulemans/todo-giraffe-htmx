@@ -14,40 +14,43 @@ open Microsoft.Extensions.DependencyInjection
 // Helper functions (extend as you need)
 // ---------------------------------
 
-let createHost() =
-    WebHostBuilder()
-        .UseContentRoot(Directory.GetCurrentDirectory())
-        .Configure(Action<IApplicationBuilder> Unit42.Todo.App.configureApp)
-        .ConfigureServices(Action<IServiceCollection> Unit42.Todo.App.configureServices)
+let createHost () =
+  WebHostBuilder()
+    .UseContentRoot(Directory.GetCurrentDirectory())
+    .Configure(Action<IApplicationBuilder> Unit42.Todo.App.configureApp)
+    .ConfigureServices(
+      Action<IServiceCollection> Unit42.Todo.App.configureServices
+    )
 
 let runTask task =
-    task
-    |> Async.AwaitTask
-    |> Async.RunSynchronously
+  task
+  |> Async.AwaitTask
+  |> Async.RunSynchronously
 
-let httpGet (path : string) (client : HttpClient) =
-    path
-    |> client.GetAsync
-    |> runTask
+let httpGet (path: string) (client: HttpClient) =
+  path |> client.GetAsync |> runTask
 
-let isStatus (code : HttpStatusCode) (response : HttpResponseMessage) =
-    Assert.Equal(code, response.StatusCode)
-    response
+let isStatus (code: HttpStatusCode) (response: HttpResponseMessage) =
+  Assert.Equal(code, response.StatusCode)
+  response
 
-let ensureSuccess (response : HttpResponseMessage) =
-    if not response.IsSuccessStatusCode
-    then response.Content.ReadAsStringAsync() |> runTask |> failwithf "%A"
-    else response
-
-let readText (response : HttpResponseMessage) =
+let ensureSuccess (response: HttpResponseMessage) =
+  if not response.IsSuccessStatusCode then
     response.Content.ReadAsStringAsync()
     |> runTask
+    |> failwithf "%A"
+  else
+    response
 
-let shouldEqual (expected : string) (actual : string) =
-    Assert.Equal(expected, actual)
+let readText (response: HttpResponseMessage) =
+  response.Content.ReadAsStringAsync()
+  |> runTask
 
-let shouldContain (expected : string) (actual : string) =
-    Assert.True(actual.Contains expected)
+let shouldEqual (expected: string) (actual: string) =
+  Assert.Equal(expected, actual)
+
+let shouldContain (expected: string) (actual: string) =
+  Assert.True(actual.Contains expected)
 
 // ---------------------------------
 // Tests
@@ -55,33 +58,33 @@ let shouldContain (expected : string) (actual : string) =
 
 [<Fact>]
 let ``Route / returns "Hello world, from Giraffe!"`` () =
-    use server = new TestServer(createHost())
-    use client = server.CreateClient()
+  use server = new TestServer(createHost ())
+  use client = server.CreateClient()
 
-    client
-    |> httpGet "/"
-    |> ensureSuccess
-    |> readText
-    |> shouldContain "Hello world, from Giraffe!"
+  client
+  |> httpGet "/"
+  |> ensureSuccess
+  |> readText
+  |> shouldContain "Hello world, from Giraffe!"
 
 [<Fact>]
 let ``Route /hello/fooBar returns "Hello fooBar, from Giraffe!"`` () =
-    use server = new TestServer(createHost())
-    use client = server.CreateClient()
+  use server = new TestServer(createHost ())
+  use client = server.CreateClient()
 
-    client
-    |> httpGet "/hello/fooBar"
-    |> ensureSuccess
-    |> readText
-    |> shouldContain "Hello fooBar, from Giraffe!"
+  client
+  |> httpGet "/hello/fooBar"
+  |> ensureSuccess
+  |> readText
+  |> shouldContain "Hello fooBar, from Giraffe!"
 
 [<Fact>]
 let ``Route which doesn't exist returns 404 Page not found`` () =
-    use server = new TestServer(createHost())
-    use client = server.CreateClient()
+  use server = new TestServer(createHost ())
+  use client = server.CreateClient()
 
-    client
-    |> httpGet "/route/which/does/not/exist"
-    |> isStatus HttpStatusCode.NotFound
-    |> readText
-    |> shouldEqual "Not Found"
+  client
+  |> httpGet "/route/which/does/not/exist"
+  |> isStatus HttpStatusCode.NotFound
+  |> readText
+  |> shouldEqual "Not Found"

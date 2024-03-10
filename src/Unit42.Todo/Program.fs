@@ -105,7 +105,7 @@ module Model =
     }
 
 
-  let addTodo (todo: Todo.T) (model: T) =
+  let upsertTodo (todo: Todo.T) (model: T) =
     let indexedTodo = nextIndexed model todo
 
     {
@@ -122,7 +122,7 @@ module Model =
     let addDummy txt m =
       let todoId = Guid.NewGuid() |> TodoId.create
 
-      addTodo
+      upsertTodo
         {
           Todo.T.Id = todoId
           Todo.T.Text =
@@ -166,59 +166,74 @@ module Views =
     ]
 
   let todoItem (todo: Todo.T) =
+    let todoId = todo.Id |> TodoId.value |> _.ToString()
+    let todoText = todo.Text |> Primitives.NonEmptyText.value
+    let todoIsDone =
+      todo.IsDone
+        |> not
+        |> string
+        |> _.ToLowerInvariant()
+
+    let vals =
+      $$"""{ 
+        "text": "{{todoText}}", 
+        "isDone": {{todoIsDone}}
+      }"""
+
     li [ _class (classes [ "completed", todo.IsDone ]) ] [
       div [ _class "view" ] [
         input (
-          [ _type "checkbox"; _class "toggle" ]
+          [
+            _type "checkbox"
+            _class "toggle"
+            attr "hx-put" $"/todos/{todoId}"
+            attr "hx-swap" "outerHTML"
+            attr "hx-target" "closest <li/>"
+            attr "hx-vals" vals
+          ]
           @ if todo.IsDone then [ _checked ] else []
         )
-        label [] [
-          todo.Text
-          |> Primitives.NonEmptyText.value
-          |> encodedText
-        ]
+        label [] [ encodedText todoText ]
         button [
           _class "destroy"
           $"/todos/{todo.Id |> TodoId.value |> _.ToString()}"
           |> attr "hx-delete"
-          attr "hx-target" "closest li"
+          attr "hx-target" "closest <li/>"
           attr "hx-swap" "delete"
         ] []
       ]
     ]
 
-  let newTodoIdInput extraAttrs newTodoId =
-    input (
+  let newTodoForm extraAttrs newTodoId =
+    form
+      ([
+        _id "new-todo-form"
+        attr "hx-put" $"/todos/{newTodoId}"
+        attr "hx-target" ".todo-list"
+        attr "hx-swap" "afterbegin"
+        attr "hx-vals" """{ "isDone": false }"""
+       ]
+       @ extraAttrs)
       [
-        _type "hidden"
-        _name "id"
-        _id "new-todo-id"
-        newTodoId
-        |> TodoId.value
-        |> _.ToString()
-        |> _value
+        input [
+          _class "new-todo"
+          _placeholder "What needs to be done?"
+          _autofocus
+          _name "text"
+        ]
       ]
-      @ extraAttrs
-    )
 
   let index (model: Model.T) =
+    let newTodoId =
+      model.NewTodoId
+      |> TodoId.value
+      |> _.ToString()
+
     [
       section [ _class "todoapp" ] [
         header [ _class "header" ] [
           h1 [] [ encodedText "todos" ]
-          form [
-            attr "hx-put" "/todos"
-            attr "hx-target" ".todo-list"
-            attr "hx-swap" "afterbegin"
-          ] [
-            newTodoIdInput [] model.NewTodoId
-            input [
-              _class "new-todo"
-              _placeholder "What needs to be done?"
-              _autofocus
-              _name "text"
-            ]
-          ]
+          newTodoForm [] newTodoId
         ]
         main [ _class "main" ] [
           div [ _class "toggle-all-container" ] [
@@ -256,8 +271,8 @@ module Views =
     |> layout
 
   module OutOfBandWrapper =
-    let withNewTodoId newTodoId content = [
-      newTodoIdInput [ attr "hx-swap-oob" "true" ] newTodoId
+    let withNewTodoForm newTodoId content = [
+      newTodoForm [ attr "hx-swap-oob" "true"] newTodoId
       content
     ]
 
@@ -359,9 +374,9 @@ let indexHandler: HttpHandler =
     htmlView view next ctx
 
 [<CLIMutable>]
-type TodoFormData = { Id: Guid; Text: string; IsDone: bool }
+type TodoFormData = { Text: string; IsDone: bool }
 
-let upsertTodoHandler: HttpHandler =
+let upsertTodoHandler (todoGuid: Guid) : HttpHandler =
   fun (next: HttpFunc) (ctx: HttpContext) ->
     let modelId = ctx.Items[requestScopeItemKeys.ModelId] :?> ModelId.T
 
@@ -380,19 +395,19 @@ let upsertTodoHandler: HttpHandler =
             RequestErrors.BAD_REQUEST "todo text must not be empty" next ctx
         | Some todoText ->
           let todo: Todo.T = {
-            Id = TodoId.create todoFormData.Id
+            Id = TodoId.create todoGuid
             Text = todoText
             IsDone = todoFormData.IsDone
           }
 
-          let updatedModel = Model.addTodo todo model
+          let updatedModel = Model.upsertTodo todo model
 
           match models.TryUpdate(modelId, updatedModel, model) with
           | false -> return! ServerErrors.INTERNAL_ERROR "" next ctx
           | true ->
             let view =
               Views.todoItem todo
-              |> Views.OutOfBandWrapper.withNewTodoId (
+              |> Views.OutOfBandWrapper.withNewTodoForm (
                 Guid.NewGuid() |> TodoId.create
               )
               |> ViewEngine.RenderView.AsString.htmlNodes
@@ -428,9 +443,12 @@ let webApp =
     subRoute
       "/todos"
       (choose [
-        PUT >=> upsertTodoHandler
+
         subRoutef "/%O" (fun todoId ->
-          choose [ DELETE >=> deleteTodoHandler todoId ])
+          choose [
+            PUT >=> upsertTodoHandler todoId
+            DELETE >=> deleteTodoHandler todoId
+          ])
       ])
     setStatusCode 404 >=> text "Not Found"
   ]
