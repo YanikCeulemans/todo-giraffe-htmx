@@ -82,6 +82,10 @@ module Model =
     |> List.sortByDescending (_.Index >> Primitives.Natural.value)
     |> List.map _.Data
 
+  let activeTodos model =
+    todos model
+    |> List.filter (not << _.IsDone)
+
   let private nextIndexed model x =
     let nextIndex =
       model.Todos
@@ -224,6 +228,28 @@ module Views =
             ]
           ]
           ul [ _class "todo-list" ] (Model.todos model |> List.map todoItem)
+        ]
+        footer [ _class "footer" ] [
+          span [ _class "todo-count" ] [
+            let activeTodoCount = Model.activeTodos model |> List.length
+            let plural = if activeTodoCount = 1 then "" else "s"
+            strong [] [ string activeTodoCount |> encodedText ]
+            encodedText $" item{plural} left"
+          ]
+          ul [ _class "filters" ] [
+            li [] [ a [ _href "#/"; _class "selected" ] [ encodedText "All" ] ]
+            li [] [ a [ _href "#/active" ] [ encodedText "Active" ] ]
+            li [] [ a [ _href "#/completed" ] [ encodedText "Completed" ] ]
+          ]
+          button [ _class "clear-completed" ] [ encodedText "Clear completed" ]
+        ]
+      ]
+      footer [ _class "info" ] [
+        p [] [ encodedText "Double-click to edit a todo" ]
+        p [] [ encodedText "Created by Unit42" ]
+        p [] [
+          encodedText "Part of "
+          a [ _href "http://todomvc.com" ] [ encodedText "TodoMVC" ]
         ]
       ]
     ]
