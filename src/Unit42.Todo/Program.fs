@@ -58,6 +58,13 @@ module Todo =
     Text: Primitives.NonEmptyText.T
   }
 
+module ModelId =
+  type T = private ModelId of Guid
+
+  let create = ModelId
+
+  let value (ModelId modelId) = modelId
+
 module Model =
   type T = {
     Todos: Map<TodoId.T, Todo.T Indexed.T>
@@ -98,6 +105,8 @@ module Model =
       model with
           Todos = Map.add todo.Id indexedTodo model.Todos
     }
+
+let models: Map<ModelId.T, Model.T> = Map.empty
 
 // ---------------------------------
 // Views
