@@ -2,6 +2,8 @@ module Unit42.Todo.App
 
 open System
 open System.IO
+open System.Collections.Concurrent
+open Microsoft.AspNetCore.Http
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Cors.Infrastructure
 open Microsoft.AspNetCore.Hosting
@@ -106,7 +108,8 @@ module Model =
           Todos = Map.add todo.Id indexedTodo model.Todos
     }
 
-let models: Map<ModelId.T, Model.T> = Map.empty
+let models: ConcurrentDictionary<ModelId.T, Model.T> =
+  ConcurrentDictionary<ModelId.T, Model.T>()
 
 // ---------------------------------
 // Views
@@ -177,6 +180,82 @@ module Views =
 // ---------------------------------
 // Web app
 // ---------------------------------
+let cookieKey = "cid"
+
+type Cookie = {
+  Name: string
+  Value: string
+  Options: CookieOptions
+}
+
+let createModelId () =
+  let guid = Guid.NewGuid()
+  let sidText = guid.ToString()
+  let modelId = ModelId.create guid
+
+  sidText, modelId
+
+let createClientIdCookie (ctx: HttpContext) clientId =
+  let cookieOptions =
+    CookieBuilder(
+      Domain = ctx.Request.Host.Host,
+      HttpOnly = true,
+      SecurePolicy = CookieSecurePolicy.SameAsRequest
+    )
+      .Build(ctx)
+
+  {
+    Name = cookieKey
+    Value = clientId
+    Options = cookieOptions
+  }
+
+let ensureIdCookie: HttpHandler =
+  fun (next: HttpFunc) (ctx: HttpContext) ->
+    let logger = ctx.GetLogger()
+
+    match ctx.GetCookieValue cookieKey with
+    | Some cidText ->
+      match Guid.TryParse(cidText) with
+      | true, cidGuid ->
+        logger.LogInformation("client has a valid cid cookie")
+        let modelId = ModelId.create cidGuid
+
+        models.TryAdd(modelId, Model.empty)
+        |> ignore
+
+      | false, _ ->
+        logger.LogInformation(
+          "client has a cid cookie '{CidText}', but it doesn't contain a \
+            model id, some state corruption must have occurred, creating new state \
+            and assigning it to a new cid cookie",
+          cidText
+        )
+
+        let cidText, modelId = createModelId ()
+
+        models.TryAdd(modelId, Model.empty)
+        |> ignore
+
+        let cookie = createClientIdCookie ctx cidText
+        ctx.Response.Cookies.Append(cookie.Name, cookie.Value, cookie.Options)
+
+    | None ->
+      logger.LogInformation(
+        "client doesn't have a cid cookie yet, creating and assigning one"
+      )
+
+      let cidText, modelId = createModelId ()
+
+      models.TryAdd(modelId, Model.empty)
+      |> ignore
+
+      let cookie = createClientIdCookie ctx cidText
+
+      ctx.Response.Cookies.Append(cookie.Name, cookie.Value, cookie.Options)
+
+    next ctx
+
 
 let indexHandler =
   let todoText1 =
@@ -204,9 +283,10 @@ let indexHandler =
   htmlView view
 
 let webApp =
-  choose [
-    GET
-    >=> choose [ route "/" >=> indexHandler ]
+  ensureIdCookie
+  >=> choose [
+    route "/"
+    >=> choose [ GET >=> indexHandler ]
     setStatusCode 404 >=> text "Not Found"
   ]
 
