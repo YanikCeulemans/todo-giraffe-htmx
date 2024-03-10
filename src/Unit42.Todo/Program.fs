@@ -34,7 +34,7 @@ module Primitives =
   module NonEmptyText =
     type T = private NonEmptyText of string
 
-    let create =
+    let ofString =
       function
       | candidate when String.IsNullOrWhiteSpace candidate -> None
       | nonEmptyText -> Some(NonEmptyText nonEmptyText)
@@ -52,6 +52,8 @@ module TodoId =
   type T = private TodoId of Guid
 
   let create = TodoId
+
+  let value (TodoId id) = id
 
 module Todo =
   type T = {
@@ -80,11 +82,6 @@ module Model =
     |> List.sortByDescending (_.Index >> Primitives.Natural.value)
     |> List.map _.Data
 
-  let createEmpty () = {
-    NewTodoId = Guid.NewGuid() |> TodoId.create
-    Todos = Map.empty
-  }
-
   let private nextIndexed model x =
     let nextIndex =
       model.Todos
@@ -112,6 +109,32 @@ module Model =
           Todos = Map.add todo.Id indexedTodo model.Todos
     }
 
+  let deleteTodo (todoId: TodoId.T) (model: T) = {
+    model with
+        Todos = Map.remove todoId model.Todos
+  }
+
+  let createEmpty () =
+    let addDummy txt m =
+      let todoId = Guid.NewGuid() |> TodoId.create
+
+      addTodo
+        {
+          Todo.T.Id = todoId
+          Todo.T.Text =
+            Primitives.NonEmptyText.ofString txt
+            |> Option.defaultWith (fun _ -> failwith "absurd")
+          Todo.T.IsDone = false
+        }
+        m
+
+    {
+      NewTodoId = Guid.NewGuid() |> TodoId.create
+      Todos = Map.empty
+    }
+    |> addDummy "First todo"
+    |> addDummy "Second todo"
+
 let models: ConcurrentDictionary<ModelId.T, Model.T> =
   ConcurrentDictionary<ModelId.T, Model.T>()
 
@@ -138,13 +161,53 @@ module Views =
       body [] content
     ]
 
+  let todoItem (todo: Todo.T) =
+    li [ _class (classes [ "completed", todo.IsDone ]) ] [
+      div [ _class "view" ] [
+        input (
+          [ _type "checkbox"; _class "toggle" ]
+          @ if todo.IsDone then [ _checked ] else []
+        )
+        label [] [
+          todo.Text
+          |> Primitives.NonEmptyText.value
+          |> encodedText
+        ]
+        button [
+          _class "destroy"
+          $"/todos/{todo.Id |> TodoId.value |> _.ToString()}"
+          |> attr "hx-delete"
+          attr "hx-target" "closest li"
+          attr "hx-swap" "delete"
+        ] []
+      ]
+    ]
+
+  let newTodoIdInput extraAttrs newTodoId =
+    input (
+      [
+        _type "hidden"
+        _name "id"
+        _id "new-todo-id"
+        newTodoId
+        |> TodoId.value
+        |> _.ToString()
+        |> _value
+      ]
+      @ extraAttrs
+    )
+
   let index (model: Model.T) =
     [
       section [ _class "todoapp" ] [
         header [ _class "header" ] [
           h1 [] [ encodedText "todos" ]
-          form [] [
-            input [ _type "hidden"; _value ""; _name "id" ]
+          form [
+            attr "hx-put" "/todos"
+            attr "hx-target" ".todo-list"
+            attr "hx-swap" "afterbegin"
+          ] [
+            newTodoIdInput [] model.NewTodoId
             input [
               _class "new-todo"
               _placeholder "What needs to be done?"
@@ -160,30 +223,17 @@ module Views =
               encodedText "Mark all as complete"
             ]
           ]
-          ul
-            [ _class "todo-list" ]
-            (Model.todos model
-             |> List.map (fun todo ->
-               li [
-                 _class (classes [ "view", true; "completed", todo.IsDone ])
-               ] [
-                 div [ _class "view" ] [
-                   input (
-                     [ _type "checkbox"; _class "toggle" ]
-                     @ if todo.IsDone then [ _checked ] else []
-                   )
-                   label [] [
-                     todo.Text
-                     |> Primitives.NonEmptyText.value
-                     |> encodedText
-                   ]
-                   button [ _class "destroy" ] []
-                 ]
-               ]))
+          ul [ _class "todo-list" ] (Model.todos model |> List.map todoItem)
         ]
       ]
     ]
     |> layout
+
+  module OutOfBandWrapper =
+    let withNewTodoId newTodoId content = [
+      newTodoIdInput [ attr "hx-swap-oob" "true" ] newTodoId
+      content
+    ]
 
 // ---------------------------------
 // Web app
@@ -282,11 +332,80 @@ let indexHandler: HttpHandler =
     let view = Views.index model
     htmlView view next ctx
 
+[<CLIMutable>]
+type TodoFormData = { Id: Guid; Text: string; IsDone: bool }
+
+let upsertTodoHandler: HttpHandler =
+  fun (next: HttpFunc) (ctx: HttpContext) ->
+    let modelId = ctx.Items[requestScopeItemKeys.ModelId] :?> ModelId.T
+
+    let model =
+      match models.TryGetValue modelId with
+      | false, _ -> failwith "absurd"
+      | true, x -> x
+
+    task {
+      match! ctx.TryBindFormAsync<TodoFormData>() with
+      | Error err -> return! RequestErrors.BAD_REQUEST err next ctx
+      | Ok todoFormData ->
+        match Primitives.NonEmptyText.ofString todoFormData.Text with
+        | None ->
+          return!
+            RequestErrors.BAD_REQUEST "todo text must not be empty" next ctx
+        | Some todoText ->
+          let todo: Todo.T = {
+            Id = TodoId.create todoFormData.Id
+            Text = todoText
+            IsDone = todoFormData.IsDone
+          }
+
+          let updatedModel = Model.addTodo todo model
+
+          match models.TryUpdate(modelId, updatedModel, model) with
+          | false -> return! ServerErrors.INTERNAL_ERROR "" next ctx
+          | true ->
+            let view =
+              Views.todoItem todo
+              |> Views.OutOfBandWrapper.withNewTodoId (
+                Guid.NewGuid() |> TodoId.create
+              )
+              |> ViewEngine.RenderView.AsString.htmlNodes
+
+            return! htmlString view next ctx
+    }
+
+let deleteTodoHandler (todoGuid: Guid) =
+  fun (next: HttpFunc) (ctx: HttpContext) ->
+    let modelId = ctx.Items[requestScopeItemKeys.ModelId] :?> ModelId.T
+
+    let model =
+      match models.TryGetValue modelId with
+      | false, _ -> failwith "absurd"
+      | true, x -> x
+
+    let todoId = TodoId.create todoGuid
+    let updatedModel = Model.deleteTodo todoId model
+
+    models.TryUpdate(modelId, updatedModel, model)
+    |> ignore
+
+    task {
+      ctx.SetStatusCode 200
+      return! ctx.WriteTextAsync "OK"
+    }
+
 let webApp =
   ensureIdCookie
   >=> choose [
     route "/"
     >=> choose [ GET >=> indexHandler ]
+    subRoute
+      "/todos"
+      (choose [
+        PUT >=> upsertTodoHandler
+        subRoutef "/%O" (fun todoId ->
+          choose [ DELETE >=> deleteTodoHandler todoId ])
+      ])
     setStatusCode 404 >=> text "Not Found"
   ]
 
