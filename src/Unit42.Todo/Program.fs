@@ -207,7 +207,7 @@ module Views =
       ]
     ]
 
-  let newTodoForm extraAttrs newTodoId =
+  let newTodoForm extraAttrs autofocus newTodoId =
     form
       ([
         _id "new-todo-form"
@@ -218,12 +218,14 @@ module Views =
        ]
        @ extraAttrs)
       [
-        input [
-          _class "new-todo"
-          _placeholder "What needs to be done?"
-          _autofocus
-          _name "text"
-        ]
+        input (
+          [
+            _class "new-todo"
+            _placeholder "What needs to be done?"
+            _name "text"
+          ]
+          @ if autofocus then [ _autofocus ] else []
+        )
       ]
 
   let todoCount extraAttrs model =
@@ -247,7 +249,7 @@ module Views =
       section [ _class "todoapp" ] [
         header [ _class "header" ] [
           h1 [] [ encodedText "todos" ]
-          newTodoForm [] newTodoId
+          newTodoForm [] true newTodoId
         ]
         main [ _class "main" ] [
           div [ _class "toggle-all-container" ] [
@@ -281,7 +283,7 @@ module Views =
 
   module OutOfBandWrapper =
     let withNewTodoForm newTodoId content = [
-      newTodoForm [ attr "hx-swap-oob" "true" ] newTodoId
+      newTodoForm [ attr "hx-swap-oob" "true" ] false newTodoId
       yield! content
     ]
 
