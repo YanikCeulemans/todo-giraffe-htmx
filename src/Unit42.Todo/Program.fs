@@ -106,29 +106,62 @@ module Model =
 module Views =
   open Giraffe.ViewEngine
 
+  let classes cs =
+    cs
+    |> List.filter snd
+    |> List.map fst
+    |> String.concat " "
+
   let layout (content: XmlNode list) =
     html [] [
       head [] [
         title [] [ encodedText "Unit42.Todo" ]
-        link [ _rel "stylesheet"; _type "text/css"; _href "/main.css" ]
+        link [ _rel "stylesheet"; _type "text/css"; _href "/app.css" ]
+        script [ _src "https://unpkg.com/htmx.org@1.9.10" ] []
       ]
       body [] content
     ]
 
-  let partial () = h1 [] [ encodedText "Unit42.Todo" ]
-
   let index (model: Model.T) =
     [
-      partial ()
-      ul
-        []
-        (Model.todos model
-         |> List.map (fun todo ->
-           li [] [
-             todo.Text
-             |> Primitives.NonEmptyText.value
-             |> encodedText
-           ]))
+      section [ _class "todoapp" ] [
+        header [ _class "header" ] [
+          h1 [] [ encodedText "todos" ]
+          input [
+            _class "new-todo"
+            _placeholder "What needs to be done?"
+            _autofocus
+          ]
+        ]
+        main [ _class "main" ] [
+          div [ _class "toggle-all-container" ] [
+            input [ _class "toggle-all"; _type "checkbox" ]
+            label [ _class "toggle-all-label"; _for "toggle-all" ] [
+              encodedText "Mark all as complete"
+            ]
+          ]
+          ul
+            [ _class "todo-list" ]
+            (Model.todos model
+             |> List.map (fun todo ->
+               li [
+                 _class (classes [ "view", true; "completed", todo.IsDone ])
+               ] [
+                 div [ _class "view" ] [
+                   input (
+                     [ _type "checkbox"; _class "toggle" ]
+                     @ if todo.IsDone then [ _checked ] else []
+                   )
+                   label [] [
+                     todo.Text
+                     |> Primitives.NonEmptyText.value
+                     |> encodedText
+                   ]
+                   button [ _class "destroy" ] []
+                 ]
+               ]))
+        ]
+      ]
     ]
     |> layout
 
@@ -149,7 +182,7 @@ let indexHandler =
     Model.empty
     |> Model.addTodo {
       Id = (TodoId.create (Guid.NewGuid()))
-      IsDone = false
+      IsDone = true
       Text = todoText1
     }
     |> Model.addTodo {
