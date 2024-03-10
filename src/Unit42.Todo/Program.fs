@@ -69,6 +69,7 @@ module ModelId =
 
 module Model =
   type T = {
+    NewTodoId: TodoId.T
     Todos: Map<TodoId.T, Todo.T Indexed.T>
   }
 
@@ -79,7 +80,10 @@ module Model =
     |> List.sortByDescending (_.Index >> Primitives.Natural.value)
     |> List.map _.Data
 
-  let empty = { Todos = Map.empty }
+  let createEmpty () = {
+    NewTodoId = Guid.NewGuid() |> TodoId.create
+    Todos = Map.empty
+  }
 
   let private nextIndexed model x =
     let nextIndex =
@@ -139,10 +143,14 @@ module Views =
       section [ _class "todoapp" ] [
         header [ _class "header" ] [
           h1 [] [ encodedText "todos" ]
-          input [
-            _class "new-todo"
-            _placeholder "What needs to be done?"
-            _autofocus
+          form [] [
+            input [ _type "hidden"; _value ""; _name "id" ]
+            input [
+              _class "new-todo"
+              _placeholder "What needs to be done?"
+              _autofocus
+              _name "text"
+            ]
           ]
         ]
         main [ _class "main" ] [
@@ -210,6 +218,8 @@ let createClientIdCookie (ctx: HttpContext) clientId =
     Options = cookieOptions
   }
 
+let requestScopeItemKeys = {| ModelId = "ModelId" |}
+
 let ensureIdCookie: HttpHandler =
   fun (next: HttpFunc) (ctx: HttpContext) ->
     let logger = ctx.GetLogger()
@@ -220,8 +230,9 @@ let ensureIdCookie: HttpHandler =
       | true, cidGuid ->
         logger.LogInformation("client has a valid cid cookie")
         let modelId = ModelId.create cidGuid
+        ctx.Items[requestScopeItemKeys.ModelId] <- modelId
 
-        models.TryAdd(modelId, Model.empty)
+        models.TryAdd(modelId, Model.createEmpty ())
         |> ignore
 
       | false, _ ->
@@ -233,8 +244,9 @@ let ensureIdCookie: HttpHandler =
         )
 
         let cidText, modelId = createModelId ()
+        ctx.Items[requestScopeItemKeys.ModelId] <- modelId
 
-        models.TryAdd(modelId, Model.empty)
+        models.TryAdd(modelId, Model.createEmpty ())
         |> ignore
 
         let cookie = createClientIdCookie ctx cidText
@@ -246,8 +258,9 @@ let ensureIdCookie: HttpHandler =
       )
 
       let cidText, modelId = createModelId ()
+      ctx.Items[requestScopeItemKeys.ModelId] <- modelId
 
-      models.TryAdd(modelId, Model.empty)
+      models.TryAdd(modelId, Model.createEmpty ())
       |> ignore
 
       let cookie = createClientIdCookie ctx cidText
@@ -257,30 +270,17 @@ let ensureIdCookie: HttpHandler =
     next ctx
 
 
-let indexHandler =
-  let todoText1 =
-    Primitives.NonEmptyText.create "First todo"
-    |> Option.defaultWith (fun _ -> failwith "absurd")
+let indexHandler: HttpHandler =
+  fun (next: HttpFunc) (ctx: HttpContext) ->
+    let modelId = ctx.Items[requestScopeItemKeys.ModelId] :?> ModelId.T
 
-  let todoText2 =
-    Primitives.NonEmptyText.create "Second todo"
-    |> Option.defaultWith (fun _ -> failwith "absurd")
+    let model =
+      match models.TryGetValue modelId with
+      | false, _ -> failwith "absurd"
+      | true, x -> x
 
-  let model =
-    Model.empty
-    |> Model.addTodo {
-      Id = (TodoId.create (Guid.NewGuid()))
-      IsDone = true
-      Text = todoText1
-    }
-    |> Model.addTodo {
-      Id = (TodoId.create (Guid.NewGuid()))
-      IsDone = false
-      Text = todoText2
-    }
-
-  let view = Views.index model
-  htmlView view
+    let view = Views.index model
+    htmlView view next ctx
 
 let webApp =
   ensureIdCookie
