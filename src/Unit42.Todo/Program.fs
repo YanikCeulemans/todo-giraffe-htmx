@@ -145,6 +145,8 @@ let models: ConcurrentDictionary<ModelId.T, Model.T> =
 // ---------------------------------
 // Views
 // ---------------------------------
+let jsonOptions =
+  Text.Json.JsonSerializerOptions(Text.Json.JsonSerializerDefaults.Web)
 
 module Views =
   open Giraffe.ViewEngine
@@ -167,18 +169,19 @@ module Views =
 
   let todoItem (todo: Todo.T) =
     let todoId = todo.Id |> TodoId.value |> _.ToString()
-    let todoText = todo.Text |> Primitives.NonEmptyText.value
-    let todoIsDone =
-      todo.IsDone
-        |> not
-        |> string
-        |> _.ToLowerInvariant()
+
+    let todoText =
+      todo.Text
+      |> Primitives.NonEmptyText.value
 
     let vals =
-      $$"""{ 
-        "text": "{{todoText}}", 
-        "isDone": {{todoIsDone}}
-      }"""
+      System.Text.Json.JsonSerializer.Serialize(
+        {|
+          Text = todoText
+          IsDone = not todo.IsDone
+        |},
+        jsonOptions
+      )
 
     li [ _class (classes [ "completed", todo.IsDone ]) ] [
       div [ _class "view" ] [
@@ -208,7 +211,7 @@ module Views =
     form
       ([
         _id "new-todo-form"
-        attr "hx-put" $"/todos/{newTodoId}"
+        attr "hx-put" $"/todos/%s{newTodoId}"
         attr "hx-target" ".todo-list"
         attr "hx-swap" "afterbegin"
         attr "hx-vals" """{ "isDone": false }"""
@@ -221,6 +224,17 @@ module Views =
           _autofocus
           _name "text"
         ]
+      ]
+
+  let todoCount extraAttrs model =
+    span
+      ([ _class "todo-count"; _id "todo-count" ]
+       @ extraAttrs)
+      [
+        let activeTodoCount = Model.activeTodos model |> List.length
+        let plural = if activeTodoCount = 1 then "" else "s"
+        strong [] [ string activeTodoCount |> encodedText ]
+        encodedText $" item{plural} left"
       ]
 
   let index (model: Model.T) =
@@ -245,12 +259,7 @@ module Views =
           ul [ _class "todo-list" ] (Model.todos model |> List.map todoItem)
         ]
         footer [ _class "footer" ] [
-          span [ _class "todo-count" ] [
-            let activeTodoCount = Model.activeTodos model |> List.length
-            let plural = if activeTodoCount = 1 then "" else "s"
-            strong [] [ string activeTodoCount |> encodedText ]
-            encodedText $" item{plural} left"
-          ]
+          todoCount [] model
           ul [ _class "filters" ] [
             li [] [ a [ _href "#/"; _class "selected" ] [ encodedText "All" ] ]
             li [] [ a [ _href "#/active" ] [ encodedText "Active" ] ]
@@ -272,8 +281,13 @@ module Views =
 
   module OutOfBandWrapper =
     let withNewTodoForm newTodoId content = [
-      newTodoForm [ attr "hx-swap-oob" "true"] newTodoId
-      content
+      newTodoForm [ attr "hx-swap-oob" "true" ] newTodoId
+      yield! content
+    ]
+
+    let withTodoCount model content = [
+      todoCount [ attr "hx-swap-oob" "true" ] model
+      yield! content
     ]
 
 // ---------------------------------
@@ -406,10 +420,11 @@ let upsertTodoHandler (todoGuid: Guid) : HttpHandler =
           | false -> return! ServerErrors.INTERNAL_ERROR "" next ctx
           | true ->
             let view =
-              Views.todoItem todo
+              [ Views.todoItem todo ]
               |> Views.OutOfBandWrapper.withNewTodoForm (
-                Guid.NewGuid() |> TodoId.create
+                Guid.NewGuid().ToString()
               )
+              |> Views.OutOfBandWrapper.withTodoCount updatedModel
               |> ViewEngine.RenderView.AsString.htmlNodes
 
             return! htmlString view next ctx
