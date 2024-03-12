@@ -10,6 +10,7 @@ open Microsoft.AspNetCore.Hosting
 open Microsoft.Extensions.Hosting
 open Microsoft.Extensions.Logging
 open Microsoft.Extensions.DependencyInjection
+open Microsoft.FSharp.Reflection
 open Giraffe
 
 // ---------------------------------
@@ -69,22 +70,31 @@ module ModelId =
 
   let value (ModelId modelId) = modelId
 
+module Filter =
+  type T =
+    | All
+    | Active
+    | Completed
+
 module Model =
   type T = {
     NewTodoId: TodoId.T
     Todos: Map<TodoId.T, Todo.T Indexed.T>
   }
 
-  let todos model =
+  let todos filter model =
     model.Todos
     |> Map.toList
     |> List.map snd
     |> List.sortByDescending (_.Index >> Primitives.Natural.value)
     |> List.map _.Data
+    |> List.filter (fun todo ->
+      match filter with
+      | Filter.All -> true
+      | Filter.Active -> not todo.IsDone
+      | Filter.Completed -> todo.IsDone)
 
-  let activeTodos model =
-    todos model
-    |> List.filter (not << _.IsDone)
+  let activeTodos model = todos Filter.Active model
 
   let private nextIndexed model x =
     let nextIndex =
@@ -253,10 +263,30 @@ module Views =
         encodedText $" item{plural} left"
       ]
 
-  let todoList model =
-    ul [ _class "todo-list" ] (Model.todos model |> List.map todoItem)
+  let todoList filter model =
+    ul
+      [ _class "todo-list" ]
+      (Model.todos filter model
+       |> List.map todoItem)
 
-  let index (model: Model.T) =
+  let filters filter =
+    ul [ _class "filters" ] [
+      for f in FSharpType.GetUnionCases typeof<Filter.T> do
+        let unionF = FSharpValue.MakeUnion(f, [||]) :?> Filter.T
+
+        let path =
+          match unionF with
+          | Filter.All -> "/"
+          | _ -> $"/{f.Name.ToLowerInvariant()}"
+
+        li [] [
+          a [ _href path; _class (classes [ "selected", filter = unionF ]) ] [
+            encodedText f.Name
+          ]
+        ]
+    ]
+
+  let index (filter: Filter.T) (model: Model.T) =
     let newTodoId =
       model.NewTodoId
       |> TodoId.value
@@ -279,15 +309,11 @@ module Views =
               attr "hx-swap" "outerHTML"
             ] [ encodedText "Mark all as complete" ]
           ]
-          todoList model
+          todoList filter model
         ]
         footer [ _class "footer" ] [
           todoCount [] model
-          ul [ _class "filters" ] [
-            li [] [ a [ _href "#/"; _class "selected" ] [ encodedText "All" ] ]
-            li [] [ a [ _href "#/active" ] [ encodedText "Active" ] ]
-            li [] [ a [ _href "#/completed" ] [ encodedText "Completed" ] ]
-          ]
+          filters filter
           button [ _class "clear-completed" ] [ encodedText "Clear completed" ]
         ]
       ]
@@ -398,7 +424,7 @@ let ensureIdCookie: HttpHandler =
     next ctx
 
 
-let indexHandler: HttpHandler =
+let indexHandler (filter: Filter.T) : HttpHandler =
   fun (next: HttpFunc) (ctx: HttpContext) ->
     let modelId = ctx.Items[requestScopeItemKeys.ModelId] :?> ModelId.T
 
@@ -407,7 +433,7 @@ let indexHandler: HttpHandler =
       | false, _ -> failwith "absurd"
       | true, x -> x
 
-    let view = Views.index model
+    let view = Views.index filter model
     htmlView view next ctx
 
 [<CLIMutable>]
@@ -489,7 +515,8 @@ let toggleAllHandler: HttpHandler =
     |> ignore
 
     let view =
-      [ Views.todoList updatedModel ]
+      // TODO: filter is part of url, so toggle all should take that into account
+      [ Views.todoList Filter.All updatedModel ]
       |> Views.OutOfBandWrapper.withTodoCount updatedModel
       |> ViewEngine.RenderView.AsString.htmlNodes
 
@@ -500,7 +527,7 @@ let webApp =
   ensureIdCookie
   >=> choose [
     route "/"
-    >=> choose [ GET >=> indexHandler ]
+    >=> choose [ GET >=> indexHandler Filter.All ]
     subRoute
       "/todos"
       (choose [
@@ -512,6 +539,8 @@ let webApp =
             DELETE >=> deleteTodoHandler todoId
           ])
       ])
+    subRoute "/active" (GET >=> indexHandler Filter.Active)
+    subRoute "/completed" (GET >=> indexHandler Filter.Completed)
     setStatusCode 404 >=> text "Not Found"
   ]
 
