@@ -76,6 +76,12 @@ module Filter =
     | Active
     | Completed
 
+  let format =
+    function
+    | All -> ""
+    | Active -> "active"
+    | Completed -> "completed"
+
 module Model =
   type T = {
     NewTodoId: TodoId.T
@@ -116,11 +122,14 @@ module Model =
 
 
   let upsertTodo (todo: Todo.T) (model: T) =
-    let indexedTodo = nextIndexed model todo
+    let changeTodo: Indexed.T<Todo.T> option -> Indexed.T<Todo.T> option =
+      function
+      | None -> nextIndexed model todo |> Some
+      | Some indexedTodo -> { indexedTodo with Data = todo } |> Some
 
     {
       model with
-          Todos = Map.add todo.Id indexedTodo model.Todos
+          Todos = Map.change todo.Id changeTodo model.Todos
     }
 
   let toggleAll (model: T) =
@@ -213,6 +222,11 @@ module Views =
           [
             _type "checkbox"
             _class "toggle"
+            // TODO: toggling todos and refreshing the page seems to sometimes
+            // go wrong where an uncompleted item suddenly has an active
+            // checkbox, but not the completed class indicating that the model
+            // is correct. It seems the HTML is not replaced correctly or the
+            // state of the checkbox is incorrectly set somehow
             attr "hx-put" $"/todos/{todoId}"
             attr "hx-swap" "outerHTML"
             attr "hx-target" "closest <li/>"
@@ -274,10 +288,7 @@ module Views =
       for f in FSharpType.GetUnionCases typeof<Filter.T> do
         let unionF = FSharpValue.MakeUnion(f, [||]) :?> Filter.T
 
-        let path =
-          match unionF with
-          | Filter.All -> "/"
-          | _ -> $"/{f.Name.ToLowerInvariant()}"
+        let path = $"/{Filter.format unionF}"
 
         li [] [
           a [ _href path; _class (classes [ "selected", filter = unionF ]) ] [
@@ -292,6 +303,11 @@ module Views =
       |> TodoId.value
       |> _.ToString()
 
+    let toggleAllPath =
+      [ Filter.format filter; "toggle-all" ]
+      |> List.filter (not << String.IsNullOrEmpty)
+      |> String.concat "/"
+
     [
       section [ _class "todoapp" ] [
         header [ _class "header" ] [
@@ -304,7 +320,7 @@ module Views =
             label [
               _class "toggle-all-label"
               _for "toggle-all"
-              attr "hx-put" "/todos/toggle-all"
+              attr "hx-put" $"/{toggleAllPath}"
               attr "hx-target" ".todo-list"
               attr "hx-swap" "outerHTML"
             ] [ encodedText "Mark all as complete" ]
@@ -314,6 +330,7 @@ module Views =
         footer [ _class "footer" ] [
           todoCount [] model
           filters filter
+          // TODO: implement clear completed feature
           button [ _class "clear-completed" ] [ encodedText "Clear completed" ]
         ]
       ]
@@ -433,6 +450,7 @@ let indexHandler (filter: Filter.T) : HttpHandler =
       | false, _ -> failwith "absurd"
       | true, x -> x
 
+    // printfn $"Model: %A{model}"
     let view = Views.index filter model
     htmlView view next ctx
 
@@ -499,7 +517,7 @@ let deleteTodoHandler (todoGuid: Guid) =
       return! ctx.WriteTextAsync "OK"
     }
 
-let toggleAllHandler: HttpHandler =
+let toggleAllHandler (filter: Filter.T) : HttpHandler =
   fun (next: HttpFunc) (ctx: HttpContext) ->
     // TODO: We can do better than this, having to fetch the model every time... come on?
     let modelId = ctx.Items[requestScopeItemKeys.ModelId] :?> ModelId.T
@@ -515,8 +533,7 @@ let toggleAllHandler: HttpHandler =
     |> ignore
 
     let view =
-      // TODO: filter is part of url, so toggle all should take that into account
-      [ Views.todoList Filter.All updatedModel ]
+      [ Views.todoList filter updatedModel ]
       |> Views.OutOfBandWrapper.withTodoCount updatedModel
       |> ViewEngine.RenderView.AsString.htmlNodes
 
@@ -527,20 +544,37 @@ let webApp =
   ensureIdCookie
   >=> choose [
     route "/"
-    >=> choose [ GET >=> indexHandler Filter.All ]
+    >=> GET
+    >=> indexHandler Filter.All
+    subRoute "/toggle-all" (choose [ PUT >=> toggleAllHandler Filter.All ])
     subRoute
       "/todos"
       (choose [
-
-        subRoute "/toggle-all" (choose [ PUT >=> toggleAllHandler ])
         subRoutef "/%O" (fun todoId ->
           choose [
             PUT >=> upsertTodoHandler todoId
             DELETE >=> deleteTodoHandler todoId
           ])
       ])
-    subRoute "/active" (GET >=> indexHandler Filter.Active)
-    subRoute "/completed" (GET >=> indexHandler Filter.Completed)
+    subRoute
+      "/active"
+      (choose [
+        subRoute
+          "/toggle-all"
+          (choose [ PUT >=> toggleAllHandler Filter.Active ])
+        GET >=> indexHandler Filter.Active
+      ])
+    subRoute
+      "/completed"
+      (choose [
+        subRoute
+          "/toggle-all"
+          (choose [
+            PUT
+            >=> toggleAllHandler Filter.Completed
+          ])
+        GET >=> indexHandler Filter.Completed
+      ])
     setStatusCode 404 >=> text "Not Found"
   ]
 
